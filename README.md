@@ -13,8 +13,8 @@ A hands-on cloud security project where I built a deliberately misconfigured AWS
 - [x] Lab account secured (root MFA, budget alert, admin group, MFA on admin user)
 - [x] Misconfigured lab built (4 deliberate findings)
 - [x] Manual audit (Access Advisor, Policy Simulator, Access Analyzer)
-- [ ] Credential report comparison (baseline vs audit)
-- [ ] Remediation and verification
+- [x] Credential report comparison (baseline vs audit)
+- [x] Remediation and verification
 - [ ] Prowler cross-check
 - [ ] Custom boto3 audit script
 
@@ -23,7 +23,7 @@ AWS IAM, IAM Access Analyzer, Policy Simulator, Credential Report, Prowler (plan
 
 ## Repo structure
 - `evidence/`: screenshots and credential reports (account IDs redacted)
-- `report/`: [findings](report/findings.md) and final audit report
+- `report/`: [findings](report/findings.md), [remediation](report/remediation.md) and final audit report
 - `scripts/`: custom audit script
 
 > All work was done in an isolated personal lab account. No real data was used.
