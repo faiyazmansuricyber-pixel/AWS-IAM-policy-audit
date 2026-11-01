@@ -70,4 +70,7 @@ The bucket names are placeholders; the buckets do not exist in the lab. The poli
 - The `f1-after-*` screenshots show "Enabled without MFA" because F1 was fixed before F2.
 
 ## Lessons learned
-TODO: write 2 to 3 lines in your own words.
+- Capturing a clean baseline first made the fixes provable. Comparing the before and after credential reports shows exactly what changed.
+- The credential report is cached for up to four hours, so a report taken right after a fix can still show the old state. The Policy Simulator (Allowed before, Denied after) proved the permission fixes that the credential report cannot show.
+- Writing a policy for one specific job (one bucket, one action) was easier than trimming down an admin policy. Least privilege starts from "what does this user actually need".
+- Evidence must be redacted and checked at zoom level before it is published. Account IDs and key IDs can hide in places like the console sign-in link, not only in the ARN.
