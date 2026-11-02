@@ -20,6 +20,10 @@ All screenshots and CSV files have the AWS account ID, access key IDs and email 
 - f3-simulator.png
 - f4-access-key.png
 - f5-access-analyzer.png
+- f6-roles-list.png
+- f6-role-trust.png
+- f6-role-permissions.png
+- f6-simulator-before.png
 
 ## After fixes
 - 02-after-fix-credential-report.csv
@@ -32,5 +36,7 @@ All screenshots and CSV files have the AWS account ID, access key IDs and email 
 - f3-policy-deleted.png
 - f4-after-deactivate.png
 - f4-after-delete.png
+- f6-after-permissions.png
+- f6-after-simulator.png
 
 See [report/remediation.md](../report/remediation.md) for how each piece of evidence maps to a fix.

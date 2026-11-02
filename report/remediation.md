@@ -1,8 +1,8 @@
 # Remediation and Verification
 
-Account: lab account (ID redacted) | Date: 1 Nov 2026 | Engineer: Faiyaz Mansuri
+Account: lab account (ID redacted) | Date: 1 to 2 Nov 2026 | Engineer: Faiyaz Mansuri
 
-Findings F1 to F4 from [findings.md](findings.md) were fixed in this order: F1, F2, F3, F4. Each fix was verified with before/after evidence.
+Findings F1 to F4 and F6 from [findings.md](findings.md) were fixed in this order: F1, F2, F3, F4, F6. F5 is informational and needed no fix. Each fix was verified with before/after evidence.
 
 ## Summary
 
@@ -12,6 +12,7 @@ Findings F1 to F4 from [findings.md](findings.md) were fixed in this order: F1, 
 | F2 | Console access enabled without MFA | Assigned a virtual MFA device to `lab-dev-intern` | Console access "Enabled with MFA"; credential report `mfa_active = true` | `f2-no-mfa.png`, `01-audit-credential-report.csv` / `f2-after-mfa.png`, `02-after-fix-credential-report.csv` |
 | F3 | `lab-overly-permissive-policy` (`Action: *`, `Resource: *`) on `lab-app-service`; IAM `DeleteUser` simulated as **Allowed** | Created `lab-app-service-s3-write`, attached it, detached and deleted the wildcard policy | Only one scoped permission left; IAM `DeleteUser` simulated as **Denied** | `f3-policy-json.png`, `f3-simulator.png` / `f3-after-permissions.png`, `f3-after-simulator.png`, `f3-policy-deleted.png` |
 | F4 | Active access key, never used | Deactivated the key, then deleted it | Access keys (0); credential report `access_key_1_active = false` | `f4-access-key.png`, `01-audit-credential-report.csv` / `f4-after-deactivate.png`, `f4-after-delete.png`, `02-after-fix-credential-report.csv` |
+| F6 | IAM role `lab-ec2-admin-role` with `AdministratorAccess`; role never used; trust policy limited to `ec2.amazonaws.com` | Removed `AdministratorAccess`; added a scoped S3 read policy as an inline policy on the role | Only one scoped policy left; IAM `DeleteUser` simulated as **Denied** (was **Allowed** before) | `f6-roles-list.png`, `f6-role-trust.png`, `f6-role-permissions.png`, `f6-simulator-before.png` / `f6-after-permissions.png`, `f6-after-simulator.png` |
 
 ## Policies created (least privilege)
 
@@ -52,6 +53,8 @@ Findings F1 to F4 from [findings.md](findings.md) were fixed in this order: F1, 
 ```
 The bucket names are placeholders; the buckets do not exist in the lab. The policies show the shape of a scoped permission.
 
+For F6, the same S3 read statements as `lab-dev-intern-s3-read` were added to the role as an **inline** policy. A managed policy would be easier to reuse and audit; inline was used here only to keep the lab simple.
+
 ## Credential report comparison
 
 | User | `01-audit` (before fixes) | `02-after-fix` |
@@ -67,10 +70,13 @@ The bucket names are placeholders; the buckets do not exist in the lab. The poli
 - `lab-dev-intern` has `password_last_used = no_information`: the console password was never used. In production this would be flagged as a dormant credential to review or remove.
 - F4: the key age was simulated (the key was created hours earlier, not 90+ days). In production, key rotation age would also be checked.
 - F5 (Access Analyzer): the analyzer reported no external access findings. The lab has no resources shared outside the account, so this is expected.
+- F6 is a role, so it does not appear in the credential report (the report covers IAM users and the root account). The proof is the role's permissions tab and the Policy Simulator result (Denied after the fix).
+- F6 before-state screenshots (`f6-role-permissions.png`, `f6-simulator-before.png`) were retaken on 2 Nov by re-attaching `AdministratorAccess` to the same lab role and removing the scoped policy, because the first before-state screenshot was missed. The after screenshots were taken earlier, right after the original fix.
 - The `f1-after-*` screenshots show "Enabled without MFA" because F1 was fixed before F2.
 
 ## Lessons learned
 - Capturing a clean baseline first made the fixes provable. Comparing the before and after credential reports shows exactly what changed.
 - The credential report is cached for up to four hours, so a report taken right after a fix can still show the old state. The Policy Simulator (Allowed before, Denied after) proved the permission fixes that the credential report cannot show.
 - Writing a policy for one specific job (one bucket, one action) was easier than trimming down an admin policy. Least privilege starts from "what does this user actually need".
+- Roles are audited differently from users: the trust relationship (who can assume the role) must be checked as well as the permissions.
 - Evidence must be redacted and checked at zoom level before it is published. Account IDs and key IDs can hide in places like the console sign-in link, not only in the ARN.
