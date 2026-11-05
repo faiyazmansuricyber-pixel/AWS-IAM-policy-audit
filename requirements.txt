@@ -1,0 +1,2 @@
+# Only needed for scripts/collect_snapshot.py (experimental). The audit script uses the standard library only.
+boto3>=1.28

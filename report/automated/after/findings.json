@@ -1,0 +1,18 @@
+{
+  "summary": {
+    "label": "lab-after-fix",
+    "users": 3,
+    "groups": 2,
+    "roles": 1,
+    "policies_analyzed": 3,
+    "findings_total": 0,
+    "by_severity": {
+      "Critical": 0,
+      "High": 0,
+      "Medium": 0,
+      "Low": 0,
+      "Info": 0
+    }
+  },
+  "findings": []
+}

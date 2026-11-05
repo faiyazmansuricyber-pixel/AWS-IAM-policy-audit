@@ -1,0 +1,72 @@
+{
+  "before": [
+    {
+      "principal": "user/lab-dev-intern",
+      "action": "iam:DeleteUser",
+      "resource": "arn:aws:iam::123456789012:user/example",
+      "expect": "allow"
+    },
+    {
+      "principal": "user/lab-app-service",
+      "action": "iam:DeleteUser",
+      "resource": "arn:aws:iam::123456789012:user/example",
+      "expect": "allow"
+    },
+    {
+      "principal": "role/lab-ec2-admin-role",
+      "action": "iam:DeleteUser",
+      "resource": "arn:aws:iam::123456789012:user/example",
+      "expect": "allow"
+    }
+  ],
+  "after": [
+    {
+      "principal": "user/lab-dev-intern",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::lab-dev-data-bucket/report.txt",
+      "expect": "allow"
+    },
+    {
+      "principal": "user/lab-dev-intern",
+      "action": "s3:PutObject",
+      "resource": "arn:aws:s3:::lab-dev-data-bucket/report.txt",
+      "expect": "deny"
+    },
+    {
+      "principal": "user/lab-dev-intern",
+      "action": "iam:DeleteUser",
+      "resource": "arn:aws:iam::123456789012:user/example",
+      "expect": "deny"
+    },
+    {
+      "principal": "user/lab-app-service",
+      "action": "s3:PutObject",
+      "resource": "arn:aws:s3:::lab-app-logs-bucket/app.log",
+      "expect": "allow"
+    },
+    {
+      "principal": "user/lab-app-service",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::lab-app-logs-bucket/app.log",
+      "expect": "deny"
+    },
+    {
+      "principal": "user/lab-app-service",
+      "action": "iam:DeleteUser",
+      "resource": "arn:aws:iam::123456789012:user/example",
+      "expect": "deny"
+    },
+    {
+      "principal": "role/lab-ec2-admin-role",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::lab-dev-data-bucket/report.txt",
+      "expect": "allow"
+    },
+    {
+      "principal": "role/lab-ec2-admin-role",
+      "action": "iam:DeleteUser",
+      "resource": "arn:aws:iam::123456789012:user/example",
+      "expect": "deny"
+    }
+  ]
+}

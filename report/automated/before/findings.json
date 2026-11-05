@@ -1,0 +1,64 @@
+{
+  "summary": {
+    "label": "lab-before-fix",
+    "users": 3,
+    "groups": 1,
+    "roles": 1,
+    "policies_analyzed": 1,
+    "findings_total": 5,
+    "by_severity": {
+      "Critical": 1,
+      "High": 3,
+      "Medium": 1,
+      "Low": 0,
+      "Info": 0
+    }
+  },
+  "findings": [
+    {
+      "rule": "WILDCARD_ALL",
+      "severity": "Critical",
+      "resource_type": "policy",
+      "resource": "policy/lab-overly-permissive-policy",
+      "title": "Policy allows all actions on all resources",
+      "detail": "Statements: statement-1. Attached to: user/lab-app-service.",
+      "remediation": "Replace with the specific actions and resources the identity needs."
+    },
+    {
+      "rule": "ADMIN_ATTACHED_ROLE",
+      "severity": "High",
+      "resource_type": "role",
+      "resource": "role/lab-ec2-admin-role",
+      "title": "AdministratorAccess attached to a role",
+      "detail": "Policy AdministratorAccess is attached.",
+      "remediation": "Replace with a scoped policy for what the workload needs."
+    },
+    {
+      "rule": "ADMIN_ATTACHED_USER",
+      "severity": "High",
+      "resource_type": "user",
+      "resource": "user/lab-dev-intern",
+      "title": "AdministratorAccess attached directly to a user",
+      "detail": "Policy AdministratorAccess is attached directly.",
+      "remediation": "Remove it and grant a scoped policy, preferably through a group."
+    },
+    {
+      "rule": "NO_MFA",
+      "severity": "High",
+      "resource_type": "user",
+      "resource": "user/lab-dev-intern",
+      "title": "Console user without MFA",
+      "detail": "Console access is enabled and no MFA device is registered.",
+      "remediation": "Enable MFA for the user."
+    },
+    {
+      "rule": "KEY_UNUSED",
+      "severity": "Medium",
+      "resource_type": "access_key",
+      "resource": "user/lab-app-service/key-1",
+      "title": "Active access key that has never been used",
+      "detail": "Key is Active and has no recorded use.",
+      "remediation": "Deactivate, then delete the key."
+    }
+  ]
+}
