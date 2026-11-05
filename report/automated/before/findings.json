@@ -4,8 +4,9 @@
     "users": 3,
     "groups": 1,
     "roles": 1,
-    "policies_analyzed": 1,
+    "policies_analyzed": 3,
     "findings_total": 5,
+    "accepted_total": 2,
     "by_severity": {
       "Critical": 1,
       "High": 3,
@@ -18,6 +19,7 @@
     {
       "rule": "WILDCARD_ALL",
       "severity": "Critical",
+      "status": "open",
       "resource_type": "policy",
       "resource": "policy/lab-overly-permissive-policy",
       "title": "Policy allows all actions on all resources",
@@ -25,8 +27,19 @@
       "remediation": "Replace with the specific actions and resources the identity needs."
     },
     {
+      "rule": "ADMIN_ATTACHED_GROUP",
+      "severity": "High",
+      "status": "accepted",
+      "resource_type": "group",
+      "resource": "group/Admins",
+      "title": "AdministratorAccess attached to a group",
+      "detail": "AdministratorAccess is attached to the group. Members: admin-user.",
+      "remediation": "Confirm this is an approved admin group, keep membership minimal, require MFA, and record the approval in approved_admins."
+    },
+    {
       "rule": "ADMIN_ATTACHED_ROLE",
       "severity": "High",
+      "status": "open",
       "resource_type": "role",
       "resource": "role/lab-ec2-admin-role",
       "title": "AdministratorAccess attached to a role",
@@ -36,6 +49,7 @@
     {
       "rule": "ADMIN_ATTACHED_USER",
       "severity": "High",
+      "status": "open",
       "resource_type": "user",
       "resource": "user/lab-dev-intern",
       "title": "AdministratorAccess attached directly to a user",
@@ -45,6 +59,7 @@
     {
       "rule": "NO_MFA",
       "severity": "High",
+      "status": "open",
       "resource_type": "user",
       "resource": "user/lab-dev-intern",
       "title": "Console user without MFA",
@@ -52,8 +67,19 @@
       "remediation": "Enable MFA for the user."
     },
     {
+      "rule": "PRIVILEGED_GROUP_MEMBER",
+      "severity": "Medium",
+      "status": "accepted",
+      "resource_type": "user",
+      "resource": "user/admin-user",
+      "title": "User inherits administrator access through a group",
+      "detail": "Inherits AdministratorAccess through group(s): Admins.",
+      "remediation": "Confirm the user needs admin access, require MFA, and record the approval in approved_admins."
+    },
+    {
       "rule": "KEY_UNUSED",
       "severity": "Medium",
+      "status": "open",
       "resource_type": "access_key",
       "resource": "user/lab-app-service/key-1",
       "title": "Active access key that has never been used",

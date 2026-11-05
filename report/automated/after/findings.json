@@ -4,8 +4,9 @@
     "users": 3,
     "groups": 2,
     "roles": 1,
-    "policies_analyzed": 3,
+    "policies_analyzed": 5,
     "findings_total": 0,
+    "accepted_total": 2,
     "by_severity": {
       "Critical": 0,
       "High": 0,
@@ -14,5 +15,26 @@
       "Info": 0
     }
   },
-  "findings": []
+  "findings": [
+    {
+      "rule": "ADMIN_ATTACHED_GROUP",
+      "severity": "High",
+      "status": "accepted",
+      "resource_type": "group",
+      "resource": "group/Admins",
+      "title": "AdministratorAccess attached to a group",
+      "detail": "AdministratorAccess is attached to the group. Members: admin-user.",
+      "remediation": "Confirm this is an approved admin group, keep membership minimal, require MFA, and record the approval in approved_admins."
+    },
+    {
+      "rule": "PRIVILEGED_GROUP_MEMBER",
+      "severity": "Medium",
+      "status": "accepted",
+      "resource_type": "user",
+      "resource": "user/admin-user",
+      "title": "User inherits administrator access through a group",
+      "detail": "Inherits AdministratorAccess through group(s): Admins.",
+      "remediation": "Confirm the user needs admin access, require MFA, and record the approval in approved_admins."
+    }
+  ]
 }

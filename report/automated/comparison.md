@@ -1,4 +1,4 @@
-# Before and after comparison
+# Before and after comparison (open findings)
 
 | Severity | Before | After |
 |---|---|---|
@@ -7,7 +7,8 @@
 | Medium | 1 | 0 |
 | Low | 0 | 0 |
 | Info | 0 | 0 |
-| **Total** | **5** | **0** |
+| **Total open** | **5** | **0** |
+| Accepted (approved administrators) | 2 | 2 |
 
 Resolved: 5 | Still present: 0 | New: 0
 

@@ -7,11 +7,12 @@ with scripts/collect_snapshot.py (experimental, see README).
 
 Commands:
   audit          Run the rules on a snapshot and write findings.json and audit_report.md
-  verify-access  Check that expected Allow/Deny results hold (a small policy evaluator)
-  compare        Compare findings before and after fixes
+  verify-access  Check expected results with a small policy evaluator (allow / deny / indeterminate)
+  compare        Compare open findings before and after fixes
 
-Known limits: Conditions are not evaluated; NotAction/NotResource statements are skipped by the
-access evaluator; AWS managed policies other than AdministratorAccess are treated as unknown.
+Scope: identity-based policies only. Not evaluated: permission boundaries, SCPs, resource-based
+policies, session policies. The evaluator returns INDETERMINATE (never a silent allow or deny) when a
+matching statement has a Condition or when an attached policy document is unresolved.
 """
 import argparse
 import fnmatch
@@ -24,7 +25,9 @@ SEVERITIES = ["Critical", "High", "Medium", "Low", "Info"]
 SEV_RANK = {s: i for i, s in enumerate(SEVERITIES)}  # lower number = worse
 ADMIN_POLICIES = {"AdministratorAccess"}
 ADMIN_DOC = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}]}
+AWS_MANAGED_PREFIX = "arn:aws:iam::aws:policy/"
 KEY_MAX_AGE_DAYS = 90
+APPROVABLE = {"ADMIN_ATTACHED_USER", "ADMIN_ATTACHED_ROLE", "ADMIN_ATTACHED_GROUP", "PRIVILEGED_GROUP_MEMBER"}
 PRIV_ESC = {
     "iam:passrole", "iam:createaccesskey", "iam:createloginprofile", "iam:updateloginprofile",
     "iam:attachuserpolicy", "iam:attachrolepolicy", "iam:attachgrouppolicy",
@@ -40,13 +43,20 @@ RULES = {
     "WILDCARD_ACTION": ("Medium", "Wildcard action on specific resources",
                         "List only the actions that are needed."),
     "PRIV_ESC": ("High", "Permission that can be used to escalate privileges, on all resources",
-                 "Remove it, or restrict it to specific resources and add conditions."),
+                 "Remove it, or restrict it to specific resources and add conditions. "
+                 "Note: only single actions are checked, not combinations."),
     "NOT_ACTION_ALLOW": ("Medium", "Allow statement uses NotAction",
                          "Rewrite as an explicit list of allowed actions."),
     "ADMIN_ATTACHED_USER": ("High", "AdministratorAccess attached directly to a user",
                             "Remove it and grant a scoped policy, preferably through a group."),
     "ADMIN_ATTACHED_ROLE": ("High", "AdministratorAccess attached to a role",
                             "Replace with a scoped policy for what the workload needs."),
+    "ADMIN_ATTACHED_GROUP": ("High", "AdministratorAccess attached to a group",
+                             "Confirm this is an approved admin group, keep membership minimal, require MFA, "
+                             "and record the approval in approved_admins."),
+    "PRIVILEGED_GROUP_MEMBER": ("Medium", "User inherits administrator access through a group",
+                                "Confirm the user needs admin access, require MFA, and record the approval "
+                                "in approved_admins."),
     "NO_MFA": ("High", "Console user without MFA", "Enable MFA for the user."),
     "KEY_UNUSED": ("Medium", "Active access key that has never been used",
                    "Deactivate, then delete the key."),
@@ -56,8 +66,12 @@ RULES = {
                      "Restrict the Principal to specific identities and add conditions."),
     "TRUST_CROSS_ACCOUNT": ("High", "Role trust policy allows another AWS account",
                             "Confirm the account is trusted; add an ExternalId or other conditions."),
+    "TRUST_FEDERATED": ("Low", "Role trusts a federated identity provider",
+                        "Review conditions such as audience and subject."),
 }
 
+
+# ---------- small helpers (tolerate malformed input) ----------
 
 def as_list(v):
     if v is None:
@@ -65,16 +79,37 @@ def as_list(v):
     return v if isinstance(v, list) else [v]
 
 
+def statements(doc):
+    if not isinstance(doc, dict):
+        return []
+    return [s for s in as_list(doc.get("Statement")) if isinstance(s, dict)]
+
+
+def ref_name(ref):
+    return ref["name"] if isinstance(ref, dict) else ref
+
+
+def ref_arn(ref):
+    return ref.get("arn") if isinstance(ref, dict) else None
+
+
+def is_admin(ref):
+    arn = ref_arn(ref)
+    return ref_name(ref) in ADMIN_POLICIES and (arn is None or arn.startswith(AWS_MANAGED_PREFIX))
+
+
 def make_finding(rule, rtype, resource, detail, severity=None):
     sev, title, fix = RULES[rule]
-    return {"rule": rule, "severity": severity or sev, "resource_type": rtype, "resource": resource,
-            "title": title, "detail": detail, "remediation": fix}
+    return {"rule": rule, "severity": severity or sev, "status": "open", "resource_type": rtype,
+            "resource": resource, "title": title, "detail": detail, "remediation": fix}
 
+
+# ---------- rule checks ----------
 
 def check_policy_document(label, doc, attached_to=None):
     """Return findings for one policy document. label is e.g. 'policy/NAME'."""
     fired = {}
-    for i, st in enumerate(as_list((doc or {}).get("Statement"))):
+    for i, st in enumerate(statements(doc)):
         if st.get("Effect") != "Allow":
             continue
         sid = st.get("Sid") or "statement-%d" % (i + 1)
@@ -87,10 +122,10 @@ def check_policy_document(label, doc, attached_to=None):
         if "*" in actions:
             fired.setdefault("WILDCARD_ACTION", []).append(sid)
             continue
-        esc = [a for a in actions if a.lower() in PRIV_ESC or a.lower() == "iam:*"]
+        esc = [a for a in actions if isinstance(a, str) and (a.lower() in PRIV_ESC or a.lower() == "iam:*")]
         if esc and "*" in resources:
             fired.setdefault("PRIV_ESC", []).append("%s (%s)" % (sid, ", ".join(esc)))
-        elif any(a.endswith(":*") for a in actions) and "*" in resources:
+        elif any(isinstance(a, str) and a.endswith(":*") for a in actions) and "*" in resources:
             fired.setdefault("WILDCARD_SERVICE", []).append(sid)
     out = []
     for rule, sids in fired.items():
@@ -102,37 +137,42 @@ def check_policy_document(label, doc, attached_to=None):
 
 
 def check_trust_policy(role_name, doc, own_account):
-    """Flag trust policies that allow any principal or a different AWS account."""
+    """Flag trust policies that allow any principal, another account, or a federated provider.
+    The severity is NOT lowered when a Condition exists: whether a condition really restricts access
+    needs manual review."""
     fired = {}
-    for st in as_list((doc or {}).get("Statement")):
+    for st in statements(doc):
         if st.get("Effect") != "Allow":
             continue
         has_cond = bool(st.get("Condition"))
         principal = st.get("Principal")
         if principal == "*":
-            values = ["*"]
-        elif isinstance(principal, dict):
-            values = as_list(principal.get("AWS"))
-        else:
-            values = []
-        for p in values:
+            fired["TRUST_PUBLIC"] = has_cond
+            continue
+        if not isinstance(principal, dict):
+            continue
+        for p in as_list(principal.get("AWS")) + as_list(principal.get("Service")):
             if p == "*":
-                fired["TRUST_PUBLIC"] = ("High" if has_cond else "Critical", has_cond)
+                fired["TRUST_PUBLIC"] = has_cond
                 continue
-            m = re.search(r"\b(\d{12})\b", p)
+            m = re.search(r"\b(\d{12})\b", p) if isinstance(p, str) else None
             if m and m.group(1) != own_account:
-                fired["TRUST_CROSS_ACCOUNT"] = ("Medium" if has_cond else "High", has_cond)
+                fired["TRUST_CROSS_ACCOUNT"] = has_cond
+        if as_list(principal.get("Federated")):
+            fired.setdefault("TRUST_FEDERATED", has_cond)
     out = []
-    for rule, (sev, has_cond) in fired.items():
-        detail = "Trust policy principal check failed (conditions present: %s)." % ("yes" if has_cond else "no")
-        out.append(make_finding(rule, "role", "role/" + role_name, detail, severity=sev))
+    for rule, has_cond in fired.items():
+        detail = "Trust policy principal check failed."
+        if has_cond:
+            detail += " A Condition is present; manual review needed (severity not lowered)."
+        out.append(make_finding(rule, "role", "role/" + role_name, detail))
     return out
 
 
 def check_user(user):
     out = []
     name = "user/" + user["name"]
-    if "AdministratorAccess" in user.get("attached_policies", []):
+    if any(is_admin(r) for r in user.get("attached_policies", [])):
         out.append(make_finding("ADMIN_ATTACHED_USER", "user", name,
                                 "Policy AdministratorAccess is attached directly."))
     if user.get("console_access") and not user.get("mfa_enabled"):
@@ -153,32 +193,51 @@ def check_user(user):
 
 def analyze(snapshot):
     findings, analyzed = [], 0
+    users, groups, roles = snapshot.get("users", []), snapshot.get("groups", []), snapshot.get("roles", [])
     attached = {}
-    for kind in ("users", "groups", "roles"):
-        for e in snapshot.get(kind, []):
-            for p in e.get("attached_policies", []):
-                attached.setdefault(p, []).append("%s/%s" % (kind[:-1], e["name"]))
+    for kind, items in (("user", users), ("group", groups), ("role", roles)):
+        for e in items:
+            for ref in e.get("attached_policies", []):
+                attached.setdefault(ref_name(ref), []).append("%s/%s" % (kind, e["name"]))
     for p in snapshot.get("policies", []):
         analyzed += 1
+        if p.get("aws_managed") and p["name"] in ADMIN_POLICIES:
+            continue  # covered by the ADMIN_ATTACHED_* rules
         findings += check_policy_document("policy/" + p["name"], p.get("document"), attached.get(p["name"]))
-    for kind in ("users", "groups", "roles"):
-        for e in snapshot.get(kind, []):
+    for kind, items in (("user", users), ("group", groups), ("role", roles)):
+        for e in items:
             for ip in e.get("inline_policies", []):
                 analyzed += 1
-                findings += check_policy_document("%s/%s inline:%s" % (kind[:-1], e["name"], ip["name"]),
+                findings += check_policy_document("%s/%s inline:%s" % (kind, e["name"], ip["name"]),
                                                   ip.get("document"))
-    for u in snapshot.get("users", []):
+    for u in users:
         findings += check_user(u)
-    for r in snapshot.get("roles", []):
-        if "AdministratorAccess" in r.get("attached_policies", []):
+    admin_groups = {g["name"] for g in groups if any(is_admin(r) for r in g.get("attached_policies", []))}
+    for gname in sorted(admin_groups):
+        members = [u["name"] for u in users if gname in u.get("groups", [])]
+        findings.append(make_finding("ADMIN_ATTACHED_GROUP", "group", "group/" + gname,
+                                     "AdministratorAccess is attached to the group. Members: %s." %
+                                     (", ".join(members) or "none")))
+    for u in users:
+        via = [g for g in u.get("groups", []) if g in admin_groups]
+        if via:
+            findings.append(make_finding("PRIVILEGED_GROUP_MEMBER", "user", "user/" + u["name"],
+                                         "Inherits AdministratorAccess through group(s): %s." % ", ".join(via)))
+    for r in roles:
+        if any(is_admin(x) for x in r.get("attached_policies", [])):
             findings.append(make_finding("ADMIN_ATTACHED_ROLE", "role", "role/" + r["name"],
                                          "Policy AdministratorAccess is attached."))
         findings += check_trust_policy(r["name"], r.get("trust_policy"), snapshot.get("account_id", ""))
+    approved = set(snapshot.get("approved_admins", []))
+    for f in findings:
+        if f["rule"] in APPROVABLE and f["resource"] in approved:
+            f["status"] = "accepted"
     findings.sort(key=lambda f: (SEV_RANK[f["severity"]], f["resource"], f["rule"]))
-    counts = {s: sum(1 for f in findings if f["severity"] == s) for s in SEVERITIES}
-    summary = {"label": snapshot.get("label", ""), "users": len(snapshot.get("users", [])),
-               "groups": len(snapshot.get("groups", [])), "roles": len(snapshot.get("roles", [])),
-               "policies_analyzed": analyzed, "findings_total": len(findings), "by_severity": counts}
+    open_f = [f for f in findings if f["status"] == "open"]
+    counts = {s: sum(1 for f in open_f if f["severity"] == s) for s in SEVERITIES}
+    summary = {"label": snapshot.get("label", ""), "users": len(users), "groups": len(groups),
+               "roles": len(roles), "policies_analyzed": analyzed, "findings_total": len(open_f),
+               "accepted_total": len(findings) - len(open_f), "by_severity": counts}
     return {"summary": summary, "findings": findings}
 
 
@@ -189,62 +248,78 @@ def redact(text):
 
 def render_markdown(result):
     s = result["summary"]
+    open_f = [f for f in result["findings"] if f["status"] == "open"]
+    acc_f = [f for f in result["findings"] if f["status"] == "accepted"]
     lines = ["# IAM Audit Report (%s)" % s["label"], "",
              "| Item | Count |", "|---|---|",
              "| Users | %d |" % s["users"], "| Groups | %d |" % s["groups"], "| Roles | %d |" % s["roles"],
              "| Policies analyzed | %d |" % s["policies_analyzed"],
-             "| **Findings** | **%d** |" % s["findings_total"]]
+             "| **Open findings** | **%d** |" % s["findings_total"]]
     lines += ["| %s | %d |" % (sev, s["by_severity"][sev]) for sev in SEVERITIES]
-    lines += ["", "## Findings", ""]
-    if not result["findings"]:
-        lines.append("No findings.")
+    lines += ["| Accepted (approved administrators) | %d |" % s["accepted_total"], "", "## Open findings", ""]
+    if not open_f:
+        lines.append("No open findings.")
     else:
         lines += ["| # | Severity | Rule | Resource | Detail |", "|---|---|---|---|---|"]
-        for i, f in enumerate(result["findings"], 1):
+        for i, f in enumerate(open_f, 1):
             lines.append("| %d | %s | %s | %s | %s |" % (i, f["severity"], f["rule"], f["resource"], f["detail"]))
         lines += ["", "## Remediation", ""]
-        for i, f in enumerate(result["findings"], 1):
+        for i, f in enumerate(open_f, 1):
             lines.append("%d. **%s** (%s): %s" % (i, f["title"], f["resource"], f["remediation"]))
+    if acc_f:
+        lines += ["", "## Accepted (listed in approved_admins)", "",
+                  "These are visible on purpose: administrator access that was reviewed and approved.", ""]
+        lines += ["- %s: %s (%s)" % (f["severity"], f["resource"], f["rule"]) for f in acc_f]
     return redact("\n".join(lines) + "\n")
 
 
 # ---------- access verification (small policy evaluator) ----------
 
-def _policy_doc(snapshot, name):
-    if name in ADMIN_POLICIES:
-        return ADMIN_DOC
+def find_policy(snapshot, ref):
+    arn, name = ref_arn(ref), ref_name(ref)
     for p in snapshot.get("policies", []):
-        if p["name"] == name:
-            return p.get("document")
+        if (arn and p.get("arn") == arn) or (not arn and p["name"] == name):
+            return p
+    return None
+
+
+def policy_doc(snapshot, ref):
+    p = find_policy(snapshot, ref)
+    if p is not None and p.get("document"):
+        return p["document"]
+    if p is None and is_admin(ref):
+        return ADMIN_DOC  # fallback for hand-written snapshots
     return None
 
 
 def effective_docs(snapshot, principal):
-    """principal is 'user/NAME' or 'role/NAME'. Returns (documents, unknown_policy_names)."""
+    """principal is 'user/NAME' or 'role/NAME'. Returns (documents, unresolved_policy_names)."""
     kind, name = principal.split("/", 1)
     ent = next((e for e in snapshot.get(kind + "s", []) if e["name"] == name), None)
     if ent is None:
         raise KeyError("principal not found: " + principal)
-    names = list(ent.get("attached_policies", []))
+    refs = list(ent.get("attached_policies", []))
     docs = [ip.get("document") for ip in ent.get("inline_policies", [])]
     if kind == "user":
         for gname in ent.get("groups", []):
             g = next((x for x in snapshot.get("groups", []) if x["name"] == gname), None)
             if g:
-                names += g.get("attached_policies", [])
+                refs += g.get("attached_policies", [])
                 docs += [ip.get("document") for ip in g.get("inline_policies", [])]
-    unknown = []
-    for n in names:
-        d = _policy_doc(snapshot, n)
+    unresolved = []
+    for r in refs:
+        d = policy_doc(snapshot, r)
         if d:
             docs.append(d)
         else:
-            unknown.append(n)
-    return docs, unknown
+            unresolved.append(ref_name(r))
+    return docs, unresolved
 
 
 def _match(patterns, value, ci=False):
     for pat in patterns:
+        if not isinstance(pat, str):
+            continue
         if ci and fnmatch.fnmatchcase(value.lower(), pat.lower()):
             return True
         if not ci and fnmatch.fnmatchcase(value, pat):
@@ -252,58 +327,88 @@ def _match(patterns, value, ci=False):
     return False
 
 
-def evaluate(docs, action, resource):
-    """Return True if allowed. Explicit Deny wins. Statements with Condition/NotAction/NotResource are skipped."""
-    allowed = False
+def _statement_matches(st, action, resource):
+    if st.get("NotAction") is not None:
+        a = not _match(as_list(st["NotAction"]), action, ci=True)
+    else:
+        a = _match(as_list(st.get("Action")), action, ci=True)
+    if st.get("NotResource") is not None:
+        r = not _match(as_list(st["NotResource"]), resource)
+    else:
+        r = _match(as_list(st.get("Resource")), resource)
+    return a and r
+
+
+def evaluate(docs, action, resource, unresolved=()):
+    """Return (result, reason). result is 'allow', 'deny' or 'indeterminate'.
+    Statements with a Condition are never treated as definite: they can make the result indeterminate."""
+    allow_def = allow_cond = deny_def = deny_cond = False
     for doc in docs:
-        for st in as_list((doc or {}).get("Statement")):
-            if st.get("Condition") or st.get("NotAction") is not None or st.get("NotResource") is not None:
+        for st in statements(doc):
+            if not _statement_matches(st, action, resource):
                 continue
-            if _match(as_list(st.get("Action")), action, ci=True) and _match(as_list(st.get("Resource")), resource):
-                if st.get("Effect") == "Deny":
-                    return False
-                if st.get("Effect") == "Allow":
-                    allowed = True
-    return allowed
+            cond = bool(st.get("Condition"))
+            if st.get("Effect") == "Deny":
+                deny_def, deny_cond = deny_def or not cond, deny_cond or cond
+            elif st.get("Effect") == "Allow":
+                allow_def, allow_cond = allow_def or not cond, allow_cond or cond
+    if deny_def:
+        return "deny", "explicit deny"
+    if allow_def:
+        if deny_cond:
+            return "indeterminate", "a conditional Deny may apply"
+        if unresolved:
+            return "indeterminate", "unresolved policies: %s" % ", ".join(unresolved)
+        return "allow", "explicit allow"
+    if allow_cond:
+        return "indeterminate", "a conditional Allow may apply"
+    if unresolved:
+        return "indeterminate", "unresolved policies: %s" % ", ".join(unresolved)
+    return "deny", "implicit deny"
 
 
 def run_access_tests(snapshot, tests):
     results = []
     for t in tests:
-        docs, unknown = effective_docs(snapshot, t["principal"])
-        got = "allow" if evaluate(docs, t["action"], t["resource"]) else "deny"
+        docs, unresolved = effective_docs(snapshot, t["principal"])
+        got, reason = evaluate(docs, t["action"], t["resource"], unresolved)
         r = dict(t)
-        r.update({"got": got, "passed": got == t["expect"], "unknown_policies": unknown})
+        r.update({"got": got, "reason": reason, "passed": got == t["expect"], "unresolved_policies": unresolved})
         results.append(r)
     return results
 
 
 def render_access_markdown(label, results):
     lines = ["# Access verification (%s)" % label, "",
-             "| Principal | Action | Resource | Expected | Got | Result |", "|---|---|---|---|---|---|"]
+             "| Principal | Action | Resource | Expected | Got | Reason | Result |", "|---|---|---|---|---|---|---|"]
     for r in results:
-        lines.append("| %s | %s | %s | %s | %s | %s |" % (
-            r["principal"], r["action"], r["resource"], r["expect"], r["got"], "PASS" if r["passed"] else "FAIL"))
+        verdict = "PASS" if r["passed"] else ("INDETERMINATE" if r["got"] == "indeterminate" else "FAIL")
+        lines.append("| %s | %s | %s | %s | %s | %s | %s |" % (
+            r["principal"], r["action"], r["resource"], r["expect"], r["got"], r["reason"], verdict))
     passed = sum(1 for r in results if r["passed"])
     lines += ["", "%d of %d checks passed." % (passed, len(results)), "",
-              "Note: conditions are not evaluated; AWS managed policies other than AdministratorAccess "
-              "are treated as unknown."]
+              "Scope: identity-based policies only. Permission boundaries, SCPs and resource-based policies are "
+              "not evaluated. A check is INDETERMINATE when a matching statement has a Condition or an attached "
+              "policy document is unresolved."]
     return redact("\n".join(lines) + "\n")
 
 
 # ---------- compare ----------
 
 def compare(before, after):
+    opened = lambda res: [f for f in res["findings"] if f["status"] == "open"]
     key = lambda f: (f["rule"], f["resource"])
-    b, a = {key(f): f for f in before["findings"]}, {key(f): f for f in after["findings"]}
+    b, a = {key(f): f for f in opened(before)}, {key(f): f for f in opened(after)}
     resolved = [b[k] for k in b if k not in a]
     new = [a[k] for k in a if k not in b]
     remaining = [a[k] for k in a if k in b]
-    lines = ["# Before and after comparison", "", "| Severity | Before | After |", "|---|---|---|"]
+    lines = ["# Before and after comparison (open findings)", "", "| Severity | Before | After |", "|---|---|---|"]
     lines += ["| %s | %d | %d |" % (s, before["summary"]["by_severity"][s], after["summary"]["by_severity"][s])
               for s in SEVERITIES]
-    lines += ["| **Total** | **%d** | **%d** |" % (before["summary"]["findings_total"],
-                                                    after["summary"]["findings_total"]),
+    lines += ["| **Total open** | **%d** | **%d** |" % (before["summary"]["findings_total"],
+                                                         after["summary"]["findings_total"]),
+              "| Accepted (approved administrators) | %d | %d |" % (before["summary"]["accepted_total"],
+                                                                    after["summary"]["accepted_total"]),
               "", "Resolved: %d | Still present: %d | New: %d" % (len(resolved), len(remaining), len(new)), ""]
     for title, items in (("Resolved", resolved), ("Still present", remaining), ("New", new)):
         lines.append("## " + title)
@@ -341,10 +446,12 @@ def main(argv=None):
         (out / "findings.json").write_text(redact(json.dumps(result, indent=2)) + "\n", encoding="utf-8")
         (out / "audit_report.md").write_text(render_markdown(result), encoding="utf-8")
         s = result["summary"]
-        print("%s: %d findings %s" % (s["label"], s["findings_total"], s["by_severity"]))
-        if args.fail_on and any(SEV_RANK[f["severity"]] <= SEV_RANK[args.fail_on.capitalize()]
-                                for f in result["findings"]):
-            return 1
+        print("%s: %d open findings %s, %d accepted" % (s["label"], s["findings_total"], s["by_severity"],
+                                                        s["accepted_total"]))
+        if args.fail_on:
+            limit = SEV_RANK[args.fail_on.capitalize()]
+            if any(f["status"] == "open" and SEV_RANK[f["severity"]] <= limit for f in result["findings"]):
+                return 1
         return 0
     if args.cmd == "verify-access":
         snap = load(args.input)

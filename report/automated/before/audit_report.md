@@ -5,15 +5,16 @@
 | Users | 3 |
 | Groups | 1 |
 | Roles | 1 |
-| Policies analyzed | 1 |
-| **Findings** | **5** |
+| Policies analyzed | 3 |
+| **Open findings** | **5** |
 | Critical | 1 |
 | High | 3 |
 | Medium | 1 |
 | Low | 0 |
 | Info | 0 |
+| Accepted (approved administrators) | 2 |
 
-## Findings
+## Open findings
 
 | # | Severity | Rule | Resource | Detail |
 |---|---|---|---|---|
@@ -30,3 +31,10 @@
 3. **AdministratorAccess attached directly to a user** (user/lab-dev-intern): Remove it and grant a scoped policy, preferably through a group.
 4. **Console user without MFA** (user/lab-dev-intern): Enable MFA for the user.
 5. **Active access key that has never been used** (user/lab-app-service/key-1): Deactivate, then delete the key.
+
+## Accepted (listed in approved_admins)
+
+These are visible on purpose: administrator access that was reviewed and approved.
+
+- High: group/Admins (ADMIN_ATTACHED_GROUP)
+- Medium: user/admin-user (PRIVILEGED_GROUP_MEMBER)

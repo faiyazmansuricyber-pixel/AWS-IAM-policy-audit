@@ -23,7 +23,7 @@ A hands-on cloud security project where I built a deliberately misconfigured AWS
 
 After the manual audit in the AWS console, I automated the same checks in Python. The script reads an IAM snapshot (a JSON file), applies rule checks, verifies expected access, and compares before and after.
 
-**Important:** the files in `lab/snapshots/` are hand-written mock data that mirror my lab (before and after the fixes). The live lab itself was audited manually in the console (see `report/`). The script reproduces and automates those checks; it was not used on the live lab. The account ID `123456789012` in the mock data is the AWS documentation example, not a real account.
+**Important:** the files in `lab/snapshots/` are hand-written mock data that mirror my lab (before and after the fixes). The live lab itself was audited manually in the console (see `report/`). The script reproduces and automates those checks; it was not used on the live lab. The account ID `123456789012` in the mock data is the AWS documentation example, not a real account. AWS managed policy documents in the mock data were reproduced by hand; the collector is designed to retrieve the real ones.
 
 ### Quick start
 Python 3.8 or newer, standard library only (tested on Python 3.12).
@@ -32,7 +32,7 @@ Python 3.8 or newer, standard library only (tested on Python 3.12).
 # 1. Audit a snapshot (writes findings.json and audit_report.md)
 python scripts/iam_audit.py audit --input lab/snapshots/before.json --outdir report/automated/before
 
-# 2. Audit the fixed state (exit code 1 if any finding is High or worse, 0 otherwise)
+# 2. Audit the fixed state (exit code 1 if any open finding is High or worse, 0 otherwise)
 python scripts/iam_audit.py audit --input lab/snapshots/after.json --outdir report/automated/after --fail-on high
 
 # 3. Check that legitimate access still works and risky access is denied
@@ -49,11 +49,14 @@ python -m unittest discover -s tests -v
 
 | Measure | Before fixes | After fixes |
 |---|---|---|
-| Critical findings | 1 | 0 |
-| High findings | 3 | 0 |
-| Medium findings | 1 | 0 |
-| **Total findings** | **5** | **0** |
-| Access checks (expected result) | 3 of 3 (admin can delete IAM users) | 8 of 8 (scoped access allowed, everything else denied) |
+| Critical findings (open) | 1 | 0 |
+| High findings (open) | 3 | 0 |
+| Medium findings (open) | 1 | 0 |
+| **Total open findings** | **5** | **0** |
+| Accepted administrators (approved list) | 2 | 2 |
+| Access checks, as expected | 3 of 3 (admin can delete IAM users) | 8 of 8 (scoped access allowed, everything else denied) |
+
+The two accepted items are the `Admins` group and the admin user who belongs to it. They are listed in `approved_admins` and still appear in the report as "accepted", so administrator access stays visible. Without the approval, the scanner reports them as open findings.
 
 Details: [comparison](report/automated/comparison.md), [before report](report/automated/before/audit_report.md), [after report](report/automated/after/audit_report.md), [access checks](report/automated/access_verification_after.md).
 
@@ -63,24 +66,32 @@ Details: [comparison](report/automated/comparison.md), [before report](report/au
 |---|---|---|
 | WILDCARD_ALL | Critical | Allow with Action `*` on Resource `*` |
 | WILDCARD_SERVICE | High | Service wildcard (for example `s3:*`) on Resource `*` |
-| PRIV_ESC | High | Privilege-escalation actions (for example `iam:PassRole`) on Resource `*` |
+| PRIV_ESC | High | Single privilege-escalation actions (for example `iam:PassRole`) on Resource `*` |
 | WILDCARD_ACTION | Medium | Action `*` on specific resources |
 | NOT_ACTION_ALLOW | Medium | Allow statement using NotAction |
-| ADMIN_ATTACHED_USER | High | AdministratorAccess attached directly to a user |
-| ADMIN_ATTACHED_ROLE | High | AdministratorAccess attached to a role |
+| ADMIN_ATTACHED_USER / ROLE | High | AdministratorAccess attached directly to a user or role |
+| ADMIN_ATTACHED_GROUP | High | AdministratorAccess attached to a group (unless approved) |
+| PRIVILEGED_GROUP_MEMBER | Medium | User inherits administrator access through a group (unless approved) |
 | NO_MFA | High | Console user without MFA |
 | KEY_UNUSED | Medium | Active access key with no recorded use |
 | KEY_OLD | Medium | Active access key older than 90 days |
-| TRUST_PUBLIC | Critical (High with a condition) | Role trust policy that allows any principal |
-| TRUST_CROSS_ACCOUNT | High (Medium with a condition) | Role trust policy that allows another AWS account |
+| TRUST_PUBLIC | Critical | Role trust policy that allows any principal |
+| TRUST_CROSS_ACCOUNT | High | Role trust policy that allows another AWS account |
+| TRUST_FEDERATED | Low | Role trusts a federated provider; review conditions |
 
-### Design notes and limits
-- AdministratorAccess given through a group is not flagged (a common admin pattern); direct attachment to users and roles is.
-- Outputs replace 12-digit numbers (account IDs) with `XXXXXXXXXXXX`.
-- The access check is a small evaluator: explicit Deny wins, then Allow, otherwise deny. It does **not** evaluate Conditions, skips NotAction and NotResource statements, and treats AWS managed policies other than AdministratorAccess as unknown. It is not a replacement for the AWS Policy Simulator.
-- `scripts/collect_snapshot.py` can build a snapshot from a real account using read-only IAM calls (needs boto3, see `requirements.txt`). It is **experimental**: its mapping logic is tested with a fake client, but it has not been run against a live AWS account yet.
-- Prowler was not run.
+### How the access check works and its limits
+- The evaluator returns `allow`, `deny` or `indeterminate`. An explicit Deny wins. A matching statement with a **Condition** never counts as a definite result: for example, an Allow with a conditional Deny is `indeterminate`.
+- An attached policy whose document is not available is **unresolved**, and the result becomes `indeterminate` unless an explicit Deny already applies.
+- `NotAction` and `NotResource` are evaluated.
+- Not evaluated: permission boundaries, SCPs, resource-based policies, session policies. It is not a replacement for the AWS Policy Simulator.
+- A Condition on a trust policy does not lower its severity; it is noted for manual review.
+- Privilege escalation is checked for single actions only, not for combinations of permissions.
 
+### Collector status
+`scripts/collect_snapshot.py` builds a snapshot from a real account with read-only IAM calls, including attached AWS managed and customer managed policy documents resolved by ARN (needs boto3, see `requirements.txt`). It is **experimental**: its mapping logic is tested with a fake client (pagination, ARNs, AccessDenied, error handling), but it has not been run against a live AWS account yet. Live snapshots are git-ignored.
+
+### Not done yet
+Prowler was not run. Not implemented: permission boundary analysis, combined privilege-escalation paths, Access Analyzer policy validation, CI.
 ## Tools
 AWS IAM, IAM Access Analyzer, Policy Simulator, Credential Report, Python (standard library; offline audit script), boto3 (experimental snapshot collector; not run against a live account), Prowler (not run)
 

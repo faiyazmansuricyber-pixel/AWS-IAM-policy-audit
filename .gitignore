@@ -11,3 +11,8 @@ credentials
 __pycache__/
 *.pyc
 .venv/
+
+# Live AWS audit data (contains account-specific information; never commit)
+lab/snapshots/live*.json
+*.snapshot.json
+report/live/

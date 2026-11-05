@@ -76,6 +76,49 @@
   ],
   "policies": [
     {
+      "name": "AdministratorAccess",
+      "arn": "arn:aws:iam::aws:policy/AdministratorAccess",
+      "aws_managed": true,
+      "document": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "note": "Mock: reproduced by hand. The collector retrieves the real document."
+    },
+    {
+      "name": "IAMUserChangePassword",
+      "arn": "arn:aws:iam::aws:policy/IAMUserChangePassword",
+      "aws_managed": true,
+      "document": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": [
+              "iam:ChangePassword"
+            ],
+            "Resource": [
+              "arn:aws:iam::*:user/${aws:username}"
+            ]
+          },
+          {
+            "Effect": "Allow",
+            "Action": [
+              "iam:GetAccountPasswordPolicy"
+            ],
+            "Resource": "*"
+          }
+        ]
+      },
+      "note": "Mock: reproduced by hand. The collector retrieves the real document."
+    },
+    {
       "name": "lab-overly-permissive-policy",
       "document": {
         "Version": "2012-10-17",
@@ -88,5 +131,9 @@
         ]
       }
     }
+  ],
+  "approved_admins": [
+    "group/Admins",
+    "user/admin-user"
   ]
 }
